@@ -1,0 +1,154 @@
+# Po3 Monitor v4 — Kullanım
+
+## Hızlı kullanım
+
+    # 1) Dosyanın başındaki CONFIG'i doldur (Telegram token/chat_id ve/veya SMTP)
+
+    # 2) Alarm kanalını test et
+    python3 po3_monitor_v4.py --test-alert
+
+    # 3) Tek tarama (deneme / cron için)
+    python3 po3_monitor_v4.py --once
+
+    # 4) Sürekli çalıştır
+    nohup python3 po3_monitor_v4.py > po3.log 2>&1 &
+    tail -f po3.log                  # izle
+    pkill -f po3_monitor_v4          # durdur
+
+    # 5) Birkaç gün/hafta sonra performans raporu
+    python3 po3_monitor_v4.py --stats
+
+    # Cron ile (10 dk'da bir):
+    */10 * * * * /usr/bin/python3 /root/games/po3_monitor_v4.py --once >> /root/games/po3.log 2>&1
+
+## v4'te yeni ne var?
+
+v3'teki her şey (4 TF izleme, retest alarmı, Telegram/mail, spam koruması) duruyor.
+Üstüne 5 özellik eklendi:
+
+**1. HTF bias filtresi (varsayılan AÇIK)**
+15m/30m/1h'deki bir long alarmı ancak 4h yapı da yukarı bias'taysa geçer
+(fiyat 4h range ortasının üstündeyse). 4h setup'ları için günlük (1d) bias'a
+bakılır. Trend'e karşı gelen sinyalleri komple eler.
+Kapatmak: --no-htf
+
+**2. Displacement puanı**
+Range içine dönüş güçlü gövdeli bir mumla olduysa (gövde, akümülasyon
+ortalama gövdesinin 2 katından büyükse) skora +1 ve DISP etiketi.
+Eşik: --disp-mult (varsayılan 2.0)
+
+**3. Open Interest teyidi (varsayılan AÇIK)**
+Sweep sırasında OI düştüyse gerçek stop-out/likidasyon olmuş demektir —
+manipülasyonun sahte olmadığının en iyi kanıtı. OI %1'den fazla düştüyse
+skora +1 ve alarmda "OI-2.1%" gibi etiket.
+Eşik: --oi-drop (varsayılan 1.0) — Kapatmak: --no-oi
+
+**4. Kill zone filtresi (varsayılan AÇIK)**
+Sweep mumu London (07:00-10:00 UTC = TR 10:00-13:00) veya NY
+(12:30-16:00 UTC = TR 15:30-19:00) seansında oluşmadıysa alarm gelmez.
+Asya öğlesindeki düşük hacimli sarkmaları eler. Seansta olan sweep +0.5 puan.
+Kapatmak: --no-killzone
+
+**5. Sonuç logu + istatistik**
+Her alarm po3_alerts.csv dosyasına yazılır. Her tarama döngüsünün başında
+açık alarmlar kontrol edilir: fiyat önce hedefe mi (-0.272 ext) yoksa
+stop'a mı (sweep ucu) gitti diye bakılır ve WIN / LOSS işaretlenir
+(ikisi aynı mumda olursa temkinli davranıp LOSS sayar; 100 bar içinde
+ikisi de olmazsa EXPIRED). Sonra:
+
+    python3 po3_monitor_v4.py --stats
+
+    === Po3 alert performance ===
+    -- BY TF
+      15m    n= 42  winrate= 54.8%  avgR=+0.31
+      1h     n= 18  winrate= 66.7%  avgR=+0.62
+    -- BY SIDE
+      LONG   n= 35  ...
+    -- BY FLAGS
+      DISP+OI-2.1%  ...
+
+Böylece "iyi kazandırıyor" hissini gerçek isabet oranına çevirirsin ve
+hangi filtrenin (OI'li alarmlar mı, DISP'liler mi, hangi TF) gerçekten
+para kazandırdığını veriyle görürsün.
+
+## Alarm örneği
+
+    Po3 RETEST SOLUSDT 1h [LONG] score=4.8
+    Symbol : SOLUSDT
+    TF     : 1h
+    Side   : LONG
+    Score  : 4.80
+    Range  : 142.10 - 151.80
+    Sweep  : 139.95 (stop)
+    Entry  : 143.20
+    Target : 154.44 (-0.272 ext)
+    Flags  : DISP KZ-London HTF-4h OI-2.3%
+
+Flags okunuşu: DISP = güçlü displacement'lı reclaim, KZ-London = sweep
+London seansında, HTF-4h = 4h bias ile uyumlu, OI-2.3% = sweep'te açık
+pozisyonlar %2.3 azalmış (gerçek stop-out).
+
+## Skor nasıl okunur?
+
+Taban puan sweep derinliği + retest pozisyonundan gelir (~0-3.5 arası),
+DISP +1, OI teyidi +1, kill zone +0.5 ekler. Kabaca:
+4+ çok temiz, 3-4 iyi, 3 altı zayıf. Sadece güçlüleri istersen:
+--min-score 3.5
+
+## Telegram kurulumu (2 dakika)
+
+1. @BotFather -> /newbot -> TOKEN'ı al
+2. Botuna herhangi bir mesaj at
+3. Tarayıcıda: https://api.telegram.org/botTOKEN/getUpdates
+   -> "chat":{"id":987654321} -> CHAT_ID bu
+4. CONFIG'e yaz, --test-alert ile dene
+Çıkış testi: curl -s https://api.telegram.org > /dev/null && echo ACIK || echo KAPALI
+
+## Mail kurulumu (SMTP)
+
+CONFIG'de EMAIL_ENABLED: True yap, SMTP bilgilerini gir.
+Gmail'de normal şifre çalışmaz: 2 Adımlı Doğrulama + "Uygulama Şifresi"
+üretip SMTP_PASS'e onu yaz. Kurumsal SMTP'de host/port'u kendine göre değiştir.
+
+## WhatsApp?
+
+Pratik değil: resmi yol Meta WhatsApp Business API veya Twilio —
+başvuru, onaylı numara ve genelde ücret ister. Gayriresmi kütüphaneler
+hesap banlatabilir. Telegram ücretsiz ve 2 dakikada kuruluyor; önerim o.
+Twilio hesabın olursa scripti ona uyarlarız.
+
+## Tüm parametreler
+
+    --tfs            İzlenecek TF'ler                            (vars: 15m 30m 1h 4h)
+    --interval       Döngüler arası bekleme (sn)                 (vars: 300)
+    --min-vol        Min 24s hacim (USDT)                        (vars: 20000000)
+    --max-symbols    En fazla kaç sembol                         (vars: 120)
+    --acc-len        Akümülasyon penceresi (mum)                 (vars: 40)
+    --manip-len      Sweep son kaç mumda aransın                 (vars: 20)
+    --width-mult     Range genişlik toleransı                    (vars: 20)
+    --drift          Range eğim toleransı 0-1                    (vars: 0.70)
+    --retest-tol     Retest bölgesi (range oranı)                (vars: 0.15)
+    --cooldown-bars  Aynı sembol/TF/yön kaç bar sussun           (vars: 8)
+    --disp-mult      Displacement eşiği (x ort. gövde)           (vars: 2.0)
+    --oi-drop        OI teyit eşiği (% düşüş)                    (vars: 1.0)
+    --min-score      Bu skorun altındaki alarmları bastır        (vars: 0)
+    --no-htf         HTF bias filtresini kapat
+    --no-killzone    Kill zone filtresini kapat
+    --no-oi          OI teyidini kapat
+    --once           Tek tarama yap ve çık (cron için)
+    --test-alert     Kanallara test mesajı at ve çık
+    --stats          Performans raporu bas ve çık
+
+## Notlar
+
+- pip gerekmez, Python 3.6+ yeterli, python3 ile çalıştır.
+- Üç filtre birden açıkken (HTF + kill zone + OI) alarm sayısı ciddi düşer —
+  bu bilinçli bir tercih. İlk günlerde az alarm gelirse önce --no-killzone
+  ile dene, hâlâ azsa --no-htf ekle; --stats raporu hangisinin
+  katkı yaptığını zamanla gösterir.
+- OI teyidi aday başına 1 ekstra API isteği yapar (sadece filtrelerden
+  geçen adaylar için) — yük ihmal edilebilir.
+- po3_alerts.csv ve po3_alert_state.json script'in yanında oluşur;
+  CSV'yi Excel'de açıp kendin de inceleyebilirsin.
+- Bu bir filtre/alarm aracıdır, sinyal servisi değil: alarm gelince
+  grafiği açıp yapıyı kendi gözünle teyit et.
