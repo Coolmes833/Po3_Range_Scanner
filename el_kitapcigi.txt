@@ -1,4 +1,3 @@
-
 # Po3 Tarayıcı & Alarm Botu — El Kitabı
 
 Binance USDT-M Futures üzerinde Po3/AMD kurulumlarını otomatik tarayan,
