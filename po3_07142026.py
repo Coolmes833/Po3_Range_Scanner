@@ -160,7 +160,7 @@ def analyze(candles, args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tf", default="15m", choices=["15m", "30m", "1h", "4h"])
+    ap.add_argument("--tf", default="15m", choices=["15m","30m","1h","2h","4h","1d"])
     ap.add_argument("--top", type=int, default=5)
     ap.add_argument("--min-vol", type=float, default=5_000_000)
     ap.add_argument("--max-symbols", type=int, default=250)
