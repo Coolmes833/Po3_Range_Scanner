@@ -1,1 +1,356 @@
 
+# Po3 Tarayıcı & Alarm Botu — El Kitabı
+
+Binance USDT-M Futures üzerinde Po3/AMD kurulumlarını otomatik tarayan,
+puanlayan ve Telegram/mail ile haber veren sistemin son halinin dokümanı.
+Hiç bilmeyen biri de bu dokümanı okuyup neyin neden yapıldığını anlayabilsin
+diye yazıldı.
+
+---
+
+## 1. Sistem ne yapar? (bir paragrafta)
+
+Piyasada büyük oyuncular pozisyon alırken tipik bir üç perdelik oyun oynanır:
+önce fiyat dar bir bantta sıkıştırılır (birikim), sonra bandın dışına doğru
+sahte bir hareketle küçük yatırımcının stopları toplanır (tuzak), en son da
+fiyat asıl yönüne doğru güçlü şekilde bırakılır (asıl hareket). Bu sisteme
+Po3 (Power of Three) veya AMD (Accumulation–Manipulation–Distribution)
+denir. Bot, yüzlerce vadeli kontratı 15 dakikalıktan günlüğe kadar birden
+çok zaman diliminde tarar; "tuzak kuruldu, asıl hareket henüz başlamadı"
+anındaki coinleri bulur, kalitesini puanlar ve sana bildirir. Ayrıca her
+sinyalin sonucunu (kazandı/kaybetti) kendi kendine takip edip istatistik
+tutar — böylece sistemin gerçekten işleyip işlemediği hisle değil veriyle
+görülür.
+
+---
+
+## 2. Konsept: Po3 / AMD'nin üç evresi
+
+**1. Akümülasyon (birikim):** Fiyat bir süre belirgin bir tavan (RH) ve
+taban (RL) arasında yatay gider. Büyük oyuncu burada dikkat çekmeden mal
+toplar/dağıtır. İki taraf da bu bandın hemen dışına stop emri yığar:
+tabanın altına satış stopları, tavanın üstüne alış stopları.
+
+**2. Manipülasyon (sweep / tuzak):** Fiyat kısa ve sert bir hamleyle
+bandın dışına taşırılır — long senaryosunda tabanın altına. Oradaki stoplar
+patlar, "kırıldı" diye short açanlar tuzağa girer. Bu taşma genelde fitilli
+kalır ve fiyat hızla bandın içine geri alınır (reclaim).
+
+**3. Distribution / Expansion (asıl hareket):** Toplanan likiditeyle asıl
+yönlü hareket başlar; fiyat bandın karşı tarafını kırar ve genişler. Hedef
+olarak fibonacci -0.272 uzantısı ve varsa üstte bekleyen alınmamış likidite
+kullanılır.
+
+Botun işi 2. evrenin bittiği, 3.'ün henüz başlamadığı dar pencereyi
+yakalamak. Short senaryosu tamamen ayna görüntüsü: taşma tavanın üstüne
+olur, hareket aşağı gelişir.
+
+---
+
+## 3. Terimler sözlüğü
+
+| Terim | Anlamı |
+|---|---|
+| **Range** | Akümülasyonun oluştuğu yatay fiyat bandı |
+| **RH / RL / EQ** | Range High (bandın tavanı) / Range Low (taban) / Equilibrium (orta nokta, 0.5) |
+| **Sweep** | Bandın dışına yapılan stop-avı taşması; fitil ucu genelde stop seviyesi olarak kullanılır |
+| **Likidite** | Belirli seviyelerde birikmiş emir yığını (çoğunlukla stop emirleri) |
+| **BSL / SSL** | Buy/Sell-Side Liquidity — tepe üstlerinde bekleyen alış stopları / dip altlarında bekleyen satış stopları |
+| **EQH / EQL** | Equal Highs/Lows — birbirine çok yakın iki tepe/dip; iki kez birikim olduğu için daha güçlü likidite mıknatısı |
+| **Draw on liquidity** | Fiyatın "çekileceği" alınmamış likidite havuzu; expansion'ın hedefi |
+| **Unswept** | Henüz alınmamış (fiyatın sonradan aşmadığı) tepe/dip |
+| **Reclaim** | Sweep sonrası fiyatın bandın içine geri KAPANMASI — tuzağın kapandığının işareti |
+| **Retest** | Reclaim'den sonra fiyatın kırdığı seviyeye geri dönüp yeniden test etmesi; klasik giriş bölgesi |
+| **Fake reclaim** | Cansız, tutunamayan geri dönüş; fiyat sonra tekrar aşağı iner (bkz. §6'daki 4 ayırt edici) |
+| **Displacement** | Ortalamanın çok üstünde gövdeli, kararlı mum; arkasında gerçek para olduğunun işareti |
+| **Kill zone** | Kurumsal hacmin yoğun olduğu seanslar: London 07–10 UTC (TR 10–13), NY 12:30–16 UTC (TR 15:30–19) |
+| **OI (Open Interest)** | Açık pozisyon toplamı. Sweep sırasında düşmesi = gerçek stop-out yaşandı demektir |
+| **HTF bias** | Üst zaman diliminin yönü (4h/1d); alt TF sinyali bununla uyumluysa güvenilirliği artar |
+| **-0.272 ext** | Range'e çizilen fibonacci'nin -0.272 uzantısı; ilk expansion hedefi |
+| **R (R-multiple)** | Kazanç/riske oran. Stop mesafen 1R'dır; +3R = riskinin 3 katı kazanç |
+| **Winrate / avgR** | Sinyallerin isabet yüzdesi / ortalama R getirisi |
+
+---
+
+## 4. Sistem bileşenleri
+
+Sistem iki ayrı araç + arkadaşın eklediği yardımcı kattan oluşur:
+
+**A) Tarayıcı (po3_loose_v2.py) — "radar".** Elle çalıştırılır, o anki
+piyasayı tarar, en iyi adayları puan sırasıyla listeler. Giriş kuralı
+dayatmaz; keşif ve göz eğitimi içindir. Reclaim kalite metriklerini
+(gövde, hacim, kapanış derinliği, ardışıklık, altta kalan likidite)
+her aday için ayrı basar.
+
+**B) Monitör (po3_monitor v5/v6) — "alarm sistemi".** Arka planda 7/24
+döner, tanımlı giriş anını (retest / reclaim) yakalayınca Telegram/mail
+atar, her alarmı CSV'ye yazar ve sonucunu kendisi işaretler.
+
+**C) Sohbet botu (po3_chat.py, arkadaşın eklemesi).** Telegram grubunda
+/durum, /stats, /son komutlarına cevap verir; /yorumla ile alarmı bir
+LLM'e (Gemini) yorumlatır. Monitörden bağımsız ikinci süreçtir.
+
+---
+
+## 5. Scriptin özellikleri (son hal)
+
+### Tespit hattı (pipeline)
+1. 24s hacmi eşiğin üstündeki tüm USDT perp'leri listeler (hacim sıralı)
+2. Her sembol için her TF'de mum verisi çeker (240 mum; 4h/1d 120)
+3. **Range doğrulama (v6):** sınırlar fitil uçları yerine persentille
+   (high'ların 90. / low'ların 10. persentili) hesaplanır; RH/RL/EQ
+   seviyelerine yeterli sayıda "değme" (touch) şartı aranır; akümülasyon
+   bloğu sabit pencere yerine son mumlar içinde kaydırmalı aramayla
+   bulunur → tek iğne, trend salınımı ve düşüş bacağı artık range sayılmaz
+4. **Sweep:** manipülasyon penceresinde bandın dışına taşma
+5. **Reclaim:** bandın içine geri kapanış + kalite kontrolleri:
+   displacement gövdesi, reclaim hacmi, kapanış derinliği, ardışık kapanış
+6. **Fake-reclaim koruması:** sweep ucunun ötesinde hâlâ alınmamış
+   likidite (unswept dip/tepe) kaldıysa sinyal verilmez/ceza uygulanır
+7. **Giriş anı:** retest (kırılan seviyeye geri dönüş) ve/veya reclaim
+   kapanışı (--entry-mode retest|reclaim|both)
+8. Konfirmasyon filtreleri/bonusları: HTF bias, kill zone, OI, draw,
+   range içi likidite bütünlüğü (INTACT)
+9. Alarm + CSV kaydı + otomatik sonuç takibi
+
+### Puanlama (maks ~7.5)
+| Bileşen | Puan | Açıklama |
+|---|---|---|
+| Sweep derinliği | 0–2.0 | Range'in ~%35'i kadar taşma ideal |
+| Giriş pozisyonu | 0–1.5 | Range'e ~%35 girmişken ideal |
+| DISP | +1.0 | Güçlü gövdeli reclaim |
+| OI teyidi | +1.0 | Sweep'te open interest düşüşü |
+| Draw (BSL/SSL) | +1.0 | Hedef yönünde alınmamış likidite |
+| EQH/EQL | +0.5 | O likidite eşit tepe/dip kümesi ise |
+| Kill zone | +0.5 | Sweep London/NY seansında |
+| INTACT | +0.5 | Range içi likidite harcanmamış |
+| SSL-below cezası | −1.0 | (loose_v2) altta alınmamış dip kaldıysa |
+
+Okuma bantları: **<3.5** bakma · **3.5–4.5** grafiği aç kendin karar ver ·
+**4.5–6** en verimli bölge · **6+** nadir, tam dizilim.
+(Bantlar tasarım varsayımı; --stats verisi biriktikçe güncellenmeli.)
+
+### Alarm ve etiketler
+Alarm gövdesi: sembol, TF, yön, skor, range, sweep (stop), entry, target
+(-0.272), draw (ikinci hedef), reclaim/retest hacimleri, flags.
+Flags sözlüğü: DISP, KZ-London/NY, HTF-4h/1d, OI-x.x%, BSL@/SSL@fiyat,
+EQH/EQL, INTACT-BSL/SSL.
+
+### İşletme özellikleri
+- Telegram (çoklu grup/chat ID) + SMTP mail; ayarlar po3_config.json'da
+- Spam koruması: aynı sembol/TF/yön için cooldown (vars. 8 bar), state
+  dosyasında kalıcı
+- CSV log + otomatik WIN/LOSS/EXPIRED işaretleme (hedef mi stop mu önce
+  vuruldu; ikisi aynı mumda ise temkinli LOSS)
+- --stats: TF / yön / flags / skor bandı kırılımıyla winrate ve avgR
+- Çalışma modları: --once (cron uyumlu tek tur), sürekli mod (nohup /
+  start_bot.sh), --test-alert, --stats
+- Tüm eşikler parametre: min-vol, max-symbols, acc-len, manip-len,
+  width-mult, drift, retest-tol, disp-mult, reclaim-vol, close-depth,
+  consec, oi-drop, min-score, touch-rh/rl/eq, touch-tol, range-pct,
+  cooldown-bars, entry-mode; aç/kapa: no-htf, no-killzone, no-oi,
+  require-draw, require-intact, require-oi, allow-ssl-below, strict
+- Python 3.6+, sadece stdlib (monitör) — QRadar/RHEL dahil her Linux'ta
+  pip'siz çalışır; Windows kurulum scripti mevcut
+
+---
+
+## 6. Fake reclaim nasıl ayırt edilir? (4 kural)
+
+1. **Gövde:** Gerçek reclaim patlar (ort. gövdenin 2x+), fake sürünür.
+2. **Kapanış derinliği:** Gerçek kapanış RL + range'in %15'inin üstüne
+   gömülür; fake seviyenin kıl payı üstünde tutunamaz.
+3. **Ardışıklık:** En az 2 ardışık kapanış bandın içinde olmalı.
+4. **Altta iş kalmış mı:** Sweep ucunun altında hâlâ alınmamış dip
+   varsa fiyat büyük ihtimalle dönüp onu alır — reclaim'e güvenme.
+   (En yapısal kural; SNX örneğindeki sarı daireyi tek başına eler.)
+
+---
+
+## 7. Hızlı kullanım özeti
+
+    # Radar: anlık en iyi adaylar
+    python3 po3_loose_v2.py --tf 15m --top 5 --min-vol 5000000
+    python3 po3_loose_v2.py --tf 15m --strict        # sadece temizler
+
+    # Tüm TF'leri sırayla tara (terminale basar)
+    for tf in 15m 30m 1h 2h 4h 1d; do echo "##### $tf #####"; \
+      python3 po3_loose_v2.py --tf $tf --top 5 --min-vol 5000000; done
+
+    # Monitör: sürekli + alarm
+    python3 po3_monitor.py --test-alert
+    nohup python3 po3_monitor.py > po3.log 2>&1 &
+    python3 po3_monitor.py --stats
+
+Tam evren taraması için: --max-symbols 500 --min-vol 1000000
+(1M altına inme: spread/likidite işlem kalitesini bozar).
+
+---
+
+## 8. Öneriler
+
+1. **--stats'ı sistemin patronu yap.** Hiçbir eşiği/filtreyi hisle
+   değiştirme; 3–4 haftalık CSV birikmeden "şu filtre iyi/kötü" kararı
+   verme. Skor bantları dahil her varsayım veriyle güncellenmeli.
+2. **entry-mode both ile başla.** Retest mi reclaim mi tartışmasının
+   cevabını tartışma değil kırılımlı rapor versin; sonra kazanan moda geç.
+3. **risk_plan / kaldıraç önerisi bölümünü kapat.** Alarma "Çılgın 20x"
+   satırı yazdırmak, kötü seride en pahalı özellik olur. R-multiple
+   bilgisi yeter; boyut kararı alarmın işi değil.
+4. **Token/API key hijyeni:** po3_config.json asla repoya girmesin
+   (.gitignore + boş example dosyası). Sızan Telegram token'ı BotFather
+   /revoke ile, Gemini anahtarı AI Studio'dan yenilensin. CSV/loglar da
+   repo dışı kalsın.
+5. **Sinyal servisi değil, filtre.** Alarm = "bakmaya değer yapı",
+   "gir" değil. Her alarmda grafiği açıp yapıyı gözle teyit et;
+   geçersizlik seviyeni (kapanışla bandın kaybı / sweep ucu) girmeden
+   önce yaz.
+6. **Küçük kontrat uyarısı:** düşük hacimli coinlerde skor yüksek bile
+   olsa spread, kayma ve likidasyon fitili riski büyüktür; boyutu ona
+   göre küçült veya sadece izle.
+7. **İzleme sağlamlığı:** makine reboot ediyorsa cron/otomatik başlatma
+   kullan; /durum komutu veya log tarihiyle botun yaşadığını gün içinde
+   bir kez kontrol et.
+8. **Aynı sembol çok TF'de çıkarsa** (örn. 1h + 4h) en güçlü aday odur;
+   tek TF'lik cılız sinyallerden önce onlara bak.
+
+---
+
+## 9. Sıfırdan yeniden yazdırma promptu
+
+Aşağıdaki promptu sakla; scriptler kaybolursa herhangi bir güçlü LLM'e
+verip sistemi birebir yeniden inşa ettirebilirsin.
+
+```
+Bana Binance USDT-M Futures üzerinde Po3/AMD (Accumulation-Manipulation-
+Distribution) kurulumlarını tarayan ve alarm veren, TEK DOSYALIK bir
+Python scripti yaz: po3_monitor.py
+
+KISITLAR
+- Python 3.6 uyumlu, SADECE stdlib (pip yok): urllib, json, ssl, csv,
+  smtplib, argparse, time, os. f-string yerine .format kullan.
+- Veri kaynağı: https://fapi.binance.com REST (auth gerekmez).
+  /fapi/v1/ticker/24hr (sembol listesi, quoteVolume ile),
+  /fapi/v1/klines?symbol=&interval=&limit= (OHLCV; k[0]=openTime ms,
+  k[1..4]=OHLC, k[7]=quote volume),
+  /futures/data/openInterestHist?symbol=&period=&limit= (OI geçmişi).
+- İstekler arası 0.12-0.15 sn bekle (rate limit).
+
+EVREN VE TF
+- USDT ile biten perp'ler, 24s hacmi --min-vol (vars 20000000) üstü,
+  hacim sıralı ilk --max-symbols (vars 120).
+- TF'ler: --tfs (vars: 15m 30m 1h 4h; 2h ve 1d de seçilebilir).
+  Mum limiti: 15m/30m/1h/2h için 240, 4h/1d için 120.
+
+TESPİT HATTI (long; short tamamen ayna)
+1) RANGE DOĞRULAMA:
+   a) Akümülasyon bloğu SABİT pencere değil: son mumlar içinde, manip
+      penceresinden (--manip-len, vars 20) önce biten --acc-len'lik
+      (vars 40) blok, 5'er mum kaydırarak aranır.
+   b) Blokta RH = high'ların 90. persentili, RL = low'ların 10.
+      persentili (--range-pct, vars 0.10), EQ = (RH+RL)/2,
+      width = RH-RL.
+   c) Konsolidasyon şartları: width <= --width-mult (vars 20) x blok
+      ort. gövdesi; |blok son kapanış - ilk açılış| <= --drift (vars
+      0.70) x width.
+   d) TOUCH: RH'ye >= --touch-rh (3), RL'ye >= --touch-rl (3), EQ'ya
+      >= --touch-eq (2) kez değme. Değme = fitilin seviye ± (width x
+      --touch-tol, vars 0.10) bandına girmesi; banttan çıkmadan geçen
+      ardışık mumlar TEK değme sayılır. Birden çok blok uyarsa toplam
+      touch sayısı en yüksek olan seçilir; hiçbiri uymazsa setup yok.
+2) SWEEP: manip penceresinde min low < RL. sweep = o mumun low'u,
+   sweep_ts = o mumun zamanı. sweep_depth = (RL - sweep)/width.
+3) RECLAIM: sweep sonrası RL üstünde kapanan mumlar. Bunlardan en
+   güçlü gövdelisi 'reclaim mumu'dur. ZORUNLU kalite şartları:
+   gövdesi >= --disp-mult (2.0) x blok ort. gövdesi DEĞİLSE DISP flag
+   verilmez (bonus); hacmi >= --reclaim-vol (1.5) x blok ort. hacmi
+   ZORUNLU; son kapanış >= RL + --close-depth (0.15) x width ZORUNLU;
+   RL üstünde >= --consec (2) ardışık kapanış ZORUNLU.
+4) FAKE-RECLAIM KORUMASI: tüm seride sweep'in ALTINDA kalan unswept
+   swing low (fractal k=2: iki komşusundan düşük, sonrasında hiç
+   kırılmamış) varsa long sinyal VERME (--allow-ssl-below ile
+   kapatılabilir).
+5) GİRİŞ ANI (--entry-mode retest|reclaim|both, vars both):
+   retest = son mumun low'u <= RL + --retest-tol (0.15) x width VE
+   kapanış RL üstünde VE kapanış RH altında (expansion başladıysa geç
+   kalınmıştır, sinyal yok). reclaim = 3. maddedeki şartlar sağlandığı
+   anda. both = ikisi de, CSV'ye entry_mode kolonu yazılır.
+
+KONFİRMASYONLAR
+- HTF bias (vars açık, --no-htf): 15m/30m/1h/2h sinyali 4h ile, 4h
+  sinyali 1d ile uyumlu olmalı. Bias = HTF son 40 mum range ortasına
+  göre kapanış konumu. Uyumluysa flag HTF-4h/1d.
+- Kill zone (vars açık, --no-killzone): sweep mumu UTC 07:00-10:00
+  (London) veya 12:30-16:00 (NY) içinde olmalı; +0.5 puan, KZ-* flag.
+- OI (vars bonus, --no-oi kapatır, --require-oi zorunlu yapar): manip
+  penceresi boyunca OI değişimi <= -%--oi-drop (1.0) ise +1 puan,
+  flag OI-x.x%.
+- DRAW ON LIQUIDITY: seride RH'nin ÜSTÜNDE kalan unswept swing high
+  (fractal k=2) varsa +1 puan, flag BSL@fiyat; en yakını alarmda
+  'Draw' (ikinci hedef) olarak yazılır. İki havuz birbirine %0.2
+  içindeyse +0.5, flag EQH. --require-draw zorunlu filtre yapar.
+  Short'ta ayna: SSL@/EQL.
+- INTACT (range içi likidite bütünlüğü): seçilen blok İÇİNDEKİ swing
+  high'lardan en az biri blok sonuna dek unswept ise +0.5, flag
+  INTACT-BSL. --require-intact zorunlu yapar.
+
+PUANLAMA
+score = 2.0x(1-|sweep_depth-0.35|, sweep_depth<1 şartıyla)
+      + 1.5x(1-|pos-0.35|)   (pos = girişin range içi konumu 0-1)
+      + DISP 1.0 + OI 1.0 + Draw 1.0 + EQH/EQL 0.5 + KZ 0.5
+      + INTACT 0.5. --min-score (vars 0) altı bastırılır.
+Hedef: target = RH + 0.272 x width (short: RL - 0.272 x width).
+Stop: sweep ucu.
+
+ALARM
+- Telegram: api.telegram.org/bot<TOKEN>/sendMessage, urlencode POST.
+  Ayarlar script yanındaki po3_config.json'dan: TELEGRAM_BOT_TOKEN,
+  TELEGRAM_CHAT_IDS (liste). Mail: smtplib STARTTLS, EMAIL_ENABLED /
+  SMTP_HOST/PORT/USER/PASS/MAIL_TO.
+- Gövde: Symbol/TF/Side/Score/Range/Sweep(stop)/Entry/Target/Draw/
+  Reclaim vol/Retest vol/Flags satırları.
+- Spam koruması: sembol|TF|yön anahtarıyla --cooldown-bars (8) x TF
+  süresi; state po3_alert_state.json'da kalıcı.
+
+LOG VE İSTATİSTİK
+- Her alarm po3_alerts.csv'ye: alert_ts, alert_time, symbol, tf, side,
+  score, range_low, range_high, sweep, entry, target, draw, flags,
+  entry_mode, reclaim_vol, retest_vol, touches("RH:4/RL:3/EQ:2"),
+  status, result, r_multiple, resolved_time. DictWriter restval="" ve
+  extrasaction="ignore" ile eski satırlar bozulmaz.
+- Her döngü başında OPEN alarmlar çözülür: alarm zamanından sonraki
+  mumlarda hedef mi stop mu ÖNCE vuruldu -> WIN (r=|target-entry|/
+  |entry-stop|) / LOSS (-1); ikisi aynı mumda -> LOSS; 100 bar içinde
+  ikisi de yoksa EXPIRED (0).
+- --stats: kapanan alarmları TF / yön / flags / skor bandı (<3.5,
+  3.5-4.5, 4.5-6, 6+) kırılımıyla n, winrate, avgR olarak raporlar.
+
+ÇALIŞMA MODLARI
+--once (tek tur, cron uyumlu), varsayılan sonsuz döngü (tur + 
+--interval sn (300) bekleme), --test-alert, --stats,
+--debug-symbol SYM (tek sembolü alır, her TF'de hangi şartta
+elendiğini satır satır basar).
+
+TEST (script içinde çalıştırılabilir küçük test bloğu):
+sentetik mumlarla şu 5 senaryo doğrulanmalı:
+1) tek derin iğneli yatay seri -> iğne range'i bozmamalı (persentil)
+2) çıkıp geri inen V salınımı -> touch şartından elenmeli
+3) düz trend bacağı -> drift/touch'tan elenmeli
+4) zayıf gövdeli + altta alınmamış dipli fake reclaim -> elenmeli
+5) dip alındıktan sonra gelen hacimli displacement reclaim + retest ->
+   geçmeli, DISP flag almalı
+python3 -m py_compile ile syntax doğrula.
+
+Ek olarak aynı tespit mantığını kullanan, alarm yerine anlık en iyi
+N adayı skor sırasıyla terminale basan hafif bir tarayıcı varyantı da
+(po3_scanner.py, --top parametreli, --strict ile kalite filtrelerini
+zorunlu yapan) üret. Her iki dosya için Türkçe, basit anlatımlı bir
+README yaz: kullanım komutları en üstte, ne aradığı ve terimler
+ortada, tüm parametreler tabloyla en altta.
+```
+
+---
+
+*Not: Bu sistem bir tarama/filtre aracıdır, sinyal servisi veya yatırım
+tavsiyesi değildir. Nihai karar ve risk yönetimi her zaman kullanıcıya
+aittir.*
